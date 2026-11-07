@@ -141,6 +141,9 @@ const SEASON_JA={WINTER:'冬',SPRING:'春',SUMMER:'夏',FALL:'秋'};
 function emptyDb(){return{schema_version:1,updated_at:null,ratings:{},streaming_override:{},streaming_cache:{}}}
 let db=Object.assign(emptyDb(),lsGet(LS_DB,{}));
 let settings=Object.assign({tmdb_key:'',google_client_id:'',drive_linked:false},lsGet(LS_SET,{}));
+// OAuthクライアントIDは公開されても安全な識別子（秘密ではない）。端末ごとの入力を省くため埋め込む
+const DEFAULT_CLIENT_ID='568813131190-9pb3hf0f3g3rbiglkq4nbk88g4eltk9p.apps.googleusercontent.com';
+if(!settings.google_client_id)settings.google_client_id=DEFAULT_CLIENT_ID;
 const metaCache=new Map();     // id -> item
 const seasonMem=new Map();     // 'YYYY-SEASON' -> items（通信・保存の節約）
 const SORD={WINTER:1,SPRING:2,SUMMER:3,FALL:4};
@@ -382,6 +385,7 @@ function importJson(text){
 }
 
 /* =============== Google Drive sync =============== */
+let settingsFileId=null;
 let gToken=null,gExp=0,gClient=null,driveFileId=null,syncState=settings.drive_linked?'need':'off',syncTimer=null,syncing=false;
 function loadGis(){return new Promise((res,rej)=>{
   if(window.google&&google.accounts&&google.accounts.oauth2)return res();
@@ -401,6 +405,46 @@ async function driveAuth(interactive){
   });
 }
 const gFetch=(url,opt={})=>fetch(url,{...opt,headers:{...(opt.headers||{}),Authorization:'Bearer '+gToken}});
+async function driveFind(name){
+  const q=encodeURIComponent(`name='${name}' and trashed=false`);
+  const r=await gFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id)&orderBy=${encodeURIComponent('modifiedTime desc')}&pageSize=1`);
+  if(!r.ok)throw new Error('Drive検索に失敗 ('+r.status+')');
+  const j=await r.json();return(j.files&&j.files[0]&&j.files[0].id)||null;
+}
+async function driveWriteJson(name,id,obj){
+  const body=JSON.stringify(obj,null,1);
+  if(id){
+    const r=await gFetch(`https://www.googleapis.com/upload/drive/v3/files/${id}?uploadType=media`,{method:'PATCH',headers:{'Content-Type':'application/json'},body});
+    if(!r.ok)throw new Error('Drive保存に失敗 ('+r.status+')');
+    return id;
+  }
+  const b='animedb'+Date.now();
+  const meta=JSON.stringify({name,mimeType:'application/json'});
+  const mp=`--${b}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${meta}\r\n--${b}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${body}\r\n--${b}--`;
+  const r=await gFetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id',{method:'POST',headers:{'Content-Type':'multipart/related; boundary='+b},body:mp});
+  if(!r.ok)throw new Error('Drive作成に失敗 ('+r.status+')');
+  return (await r.json()).id;
+}
+// TMDBキーは評価データとは別ファイル（anime-techo-settings.json）でDriveに保存して端末間で共有する
+async function syncSettingsFile(){
+  const name='anime-techo-settings.json';
+  if(!settingsFileId)settingsFileId=await driveFind(name);
+  let remote=null;
+  if(settingsFileId){
+    const r=await gFetch(`https://www.googleapis.com/drive/v3/files/${settingsFileId}?alt=media`);
+    if(r.ok)remote=await r.json().catch(()=>null);
+  }
+  const local=(settings.tmdb_key||'').trim();
+  const rk=((remote&&remote.tmdb_key)||'').trim();
+  if(rk&&(!local||(rk!==local&&(settings.tmdb_key_at||'')<=(remote.updated_at||'')))){
+    settings.tmdb_key=rk;settings.tmdb_key_at=remote.updated_at||nowIso();saveSettings();
+    toast('TMDBキーをDriveから読み込みました');
+    if(ui.items.length)queueStreaming(ui.items);
+  }else if(local&&rk!==local){
+    const at=settings.tmdb_key_at||nowIso();settings.tmdb_key_at=at;saveSettings();
+    settingsFileId=await driveWriteJson(name,settingsFileId,{_readme:'アニメ手帖の設定（Drive同期用）。TMDB APIキーが入っています。他人やAIに渡さないでください。',tmdb_key:local,updated_at:at});
+  }
+}
 async function driveSync(interactive){
   if(syncing)return;syncing=true;setSync('busy');
   try{
@@ -428,6 +472,7 @@ async function driveSync(interactive){
       if(!r.ok)throw new Error('Drive作成に失敗 ('+r.status+')');
       id=(await r.json()).id;
     }
+    try{await syncSettingsFile()}catch(e){console.warn('settings sync',e)}
     driveFileId=id;settings.drive_linked=true;saveSettings();setSync('ok');
     if(ui.tab!=='settings')render();
     return true;
@@ -752,17 +797,17 @@ function renderSettings(m){
   <div class="panel"><h2>📺 配信情報 (TMDB)</h2>
     <div class="field"><label>TMDB APIキー（v3 APIキー、または v4 読み取りアクセストークン）</label><input id="tkey" type="password" placeholder="未設定" value="${esc(settings.tmdb_key)}"></div>
     <div class="row"><button class="btn pri" id="tSave">保存</button><button class="btn" id="tClear">配信情報キャッシュを消して再取得</button></div>
-    <p class="hint">キーはこのブラウザにだけ保存され、JSONデータやDriveには含まれません。</p>
+    <p class="hint">キーはこのブラウザに保存されます。Drive連携中は、評価データとは別のファイル <code>anime-techo-settings.json</code> にも保存され、別の端末では「連携」を押すだけで読み込まれます（評価データのJSONには含まれません）。</p>
   </div>
   <div class="panel"><h2>💾 データのバックアップ</h2>
     <div class="row"><button class="btn" id="exp">JSONを書き出す</button>
     <label class="btn">JSONを読み込む（統合）<input type="file" id="imp" accept=".json,application/json" hidden></label></div>
     <p class="hint">書き出したJSONはそのまま他のAIに渡せます。読み込みは「新しい方を採用」で統合されます。</p>
   </div>`;
-  $('#tSave').onclick=()=>{settings.tmdb_key=$('#tkey').value.trim();saveSettings();toast('保存しました');if(ui.items.length)queueStreaming(ui.items)};
+  $('#tSave').onclick=()=>{settings.tmdb_key=$('#tkey').value.trim();settings.tmdb_key_at=nowIso();saveSettings();toast('保存しました');scheduleSync();if(ui.items.length)queueStreaming(ui.items)};
   $('#tClear').onclick=()=>{db.streaming_cache={};save();streamQueue=[];toast('キャッシュを消去しました');ui.tab='season';render()};
   $('#gConnect').onclick=async()=>{settings.google_client_id=$('#gcid').value.trim();saveSettings();if(await driveSync(true))toast('Driveと同期しました')};
-  const off=$('#gOff');if(off)off.onclick=()=>{settings.drive_linked=false;saveSettings();gToken=null;driveFileId=null;setSync('off');renderSettings(m)};
+  const off=$('#gOff');if(off)off.onclick=()=>{settings.drive_linked=false;saveSettings();gToken=null;driveFileId=null;settingsFileId=null;setSync('off');renderSettings(m)};
   $('#exp').onclick=downloadJson;
   $('#imp').onchange=async e=>{const f=e.target.files[0];if(!f)return;
     try{importJson(await f.text());toast('読み込みました');render()}catch(err){toast('読み込み失敗: '+err.message,4500)}};
