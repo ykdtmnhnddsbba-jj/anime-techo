@@ -84,6 +84,12 @@ label.chk{display:flex;gap:6px;align-items:center;color:var(--sub);font-size:14p
 .stick .toolbar{margin-bottom:10px}
 .gh{grid-column:1/-1;margin:14px 0 0;padding:6px 2px;font-size:18px;border-bottom:2px solid var(--accent);color:var(--text)}
 .gh:first-child{margin-top:0}
+.trow{display:flex;gap:8px;align-items:flex-start}
+.trow .ctitle{flex:1;min-width:0}
+.avg{flex:none;font-weight:800;font-size:16px;line-height:1.3;padding:1px 10px;border-radius:8px;background:#2a2d3f;color:#b5b9cc;white-space:nowrap}
+.avg.mid{background:#16312f;color:#5eead4;border:1px solid #2a5b55}
+.avg.hi{background:#3a2f0b;color:#fbbf24;border:1px solid #8a6f1c;font-size:17px}
+.avg small{font-size:10px;font-weight:600;opacity:.75;margin-left:3px}
 .card.item{flex-direction:row;cursor:default}
 .card.item:hover{transform:none;border-color:#4a4f6e}
 .item .cover{width:92px;flex:none;aspect-ratio:2/3;align-self:flex-start;cursor:pointer}
@@ -697,6 +703,13 @@ function badgesHtml(id){
   const one=(k,label,cls)=>{const x=s[k];if(x.v===true)h+=`<span class="badge ${x.src==='anilist'?'hint':cls}">${label}</span>`};
   one('prime','Prime','prime');one('netflix','Netflix','netflix');return h;
 }
+// AniListの平均スコア(0-100)を10点満点で目立たせる。8.0以上=金、7.0以上=緑
+function avgChip(it){
+  if(!it.avg)return'';
+  const v=(it.avg/10).toFixed(1);
+  const cls=it.avg>=80?'hi':it.avg>=70?'mid':'';
+  return`<span class="avg ${cls}" title="AniListの平均スコア（みんなの評価）">★${v}<small>平均</small></span>`;
+}
 function cardHtml(it,rec,prof){
   const r=db.ratings[it.id],rated=isRated(it.id);
   const rc=rec.get(it.id);
@@ -704,8 +717,8 @@ function cardHtml(it,rec,prof){
   return`<div class="card item" data-id="${it.id}">
     <div class="cover" style="background-image:url('${esc(it.cover)}')">${rated?`<span class="score">${r.score}</span>`:''}</div>
     <div class="cbody">
-      <div class="ctitle">${esc(titleOf(it))}</div>
-      <div class="meta">${esc(it.genres.slice(0,3).map(ja).join(' / '))}${it.avg?` ・ ★${it.avg}`:''}${it.episodes?` ・ ${it.episodes}話`:''}</div>
+      <div class="trow"><div class="ctitle">${esc(titleOf(it))}</div>${avgChip(it)}</div>
+      <div class="meta">${esc(it.genres.slice(0,3).map(ja).join(' / '))}${it.episodes?` ・ ${it.episodes}話`:''}</div>
       <div class="bd">${badgesHtml(it.id)}</div>
       ${showMatch?`<div class="reason">相性 ${rc.match}%${rc.reasons.length?'　◎ '+esc(rc.reasons.map(ja).join('・')):''}</div>`:''}
       ${ctrlHtml(it.id)}
@@ -876,8 +889,8 @@ function openModal(id){
   };
   root.innerHTML=`<div class="ov" id="ov"><div class="modal">
     <div class="mhead"><div class="mc" style="background-image:url('${esc(it.cover)}')"></div>
-      <div style="min-width:0"><h2>${esc(titleOf(it))}</h2>
-        <div class="meta">${esc([it.romaji!==titleOf(it)?it.romaji:'',it.studio,it.episodes?it.episodes+'話':'',it.avg?'★'+it.avg:''].filter(Boolean).join(' ・ '))}</div>
+      <div style="min-width:0"><h2>${esc(titleOf(it))}</h2>${it.avg?`<div style="margin:2px 0 8px">${avgChip(it)}</div>`:''}
+        <div class="meta">${esc([it.romaji!==titleOf(it)?it.romaji:'',it.studio,it.episodes?it.episodes+'話':''].filter(Boolean).join(' ・ '))}</div>
         <div style="margin:8px 0">${it.genres.map(g=>`<span class="pill">${esc(ja(g))}</span>`).join('')}${it.tags.map(t=>`<span class="pill">#${esc(ja(t))}</span>`).join('')}</div>
         ${prof.n>=3&&rc.match!=null?`<div class="reason">相性 ${rc.match}%${rc.reasons.length?'　◎ '+esc(rc.reasons.map(ja).join('・')):''}${rc.cons.length?'　△ '+esc(rc.cons.map(ja).join('・')):''}</div>`:''}
         <p><a href="${esc(it.url)}" target="_blank" rel="noopener" style="color:var(--accent2)">AniListで開く ↗</a></p>
