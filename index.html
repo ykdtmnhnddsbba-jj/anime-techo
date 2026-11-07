@@ -177,6 +177,12 @@ function normItem(m){
     season:m.season||null,year:m.seasonYear||null,
     links:{prime:links.some(s=>/amazon|prime/i.test(s)),netflix:links.some(s=>/netflix/i.test(s))}};
 }
+// ジャンル・タグの日本語表示（保存データは英語のまま。ここにない語は英語のまま表示）
+const JA={
+'Action':'アクション','Adventure':'冒険','Comedy':'コメディ','Drama':'ドラマ','Ecchi':'お色気','Fantasy':'ファンタジー','Horror':'ホラー','Mahou Shoujo':'魔法少女','Mecha':'ロボット','Music':'音楽','Mystery':'ミステリー','Psychological':'心理','Romance':'恋愛','Sci-Fi':'SF','Slice of Life':'日常','Sports':'スポーツ','Supernatural':'超常現象','Thriller':'サスペンス',
+'Shounen':'少年向け','Shoujo':'少女向け','Seinen':'青年向け','Josei':'女性向け','Isekai':'異世界','School':'学園','School Club':'部活','Super Power':'超能力','Magic':'魔法','Military':'軍事','Historical':'歴史','Time Travel':'タイムトラベル','Time Loop':'タイムループ','Reincarnation':'転生','Gore':'流血・グロ','Violence':'暴力','Swordplay':'剣戟','Martial Arts':'武術','Survival':'サバイバル','Post-Apocalyptic':'終末世界','Dystopian':'ディストピア','Space':'宇宙','Cyberpunk':'サイバーパンク','Steampunk':'スチームパンク','Video Games':'ゲーム','Virtual World':'仮想世界','Idol':'アイドル','Idols (Female)':'アイドル(女性)','Idols (Male)':'アイドル(男性)','Band':'バンド','Cute Girls Doing Cute Things':'美少女日常','Iyashikei':'癒やし系','Coming of Age':'成長物語','Workplace':'職場','Food':'食べ物','Cooking':'料理','Detective':'探偵','Crime':'犯罪','Police':'警察','Gangs':'ギャング','Yakuza':'ヤクザ','Anti-Hero':'アンチヒーロー','Male Protagonist':'男性主人公','Female Protagonist':'女性主人公','Ensemble Cast':'群像劇','Primarily Adult Cast':'大人中心','Primarily Teen Cast':'10代中心','Primarily Female Cast':'女性中心','Primarily Male Cast':'男性中心','Primarily Child Cast':'子ども中心','Love Triangle':'三角関係','Harem':'ハーレム','Reverse Harem':'逆ハーレム','Yuri':'百合','Boys\' Love':'BL','Shounen Ai':'BL','Tragedy':'悲劇','Revenge':'復讐','War':'戦争','Politics':'政治','Royalty':'王族','Nobility':'貴族','Vampire':'吸血鬼','Zombie':'ゾンビ','Demons':'悪魔','Gods':'神','Angels':'天使','Ghost':'幽霊','Youkai':'妖怪','Mythology':'神話','Dragons':'ドラゴン','Elf':'エルフ','Witch':'魔女','Ninja':'忍者','Samurai':'侍','Pirates':'海賊','Robots':'ロボット','Aliens':'宇宙人','Artificial Intelligence':'AI','Cyborg':'サイボーグ','Superhero':'ヒーロー','Parody':'パロディ','Satire':'風刺','Black Comedy':'ブラックコメディ','Slapstick':'ドタバタ','Gag Humor':'ギャグ','Rakugo':'落語','Kuudere':'クーデレ','Tsundere':'ツンデレ','Yandere':'ヤンデレ','Maids':'メイド','Basketball':'バスケ','Baseball':'野球','Football':'サッカー','Tennis':'テニス','Volleyball':'バレー','Swimming':'水泳','Boxing':'ボクシング','Racing':'レース','Golf':'ゴルフ','Card Battle':'カードバトル','Board Game':'ボードゲーム','Gambling':'ギャンブル','Chuunibyou':'中二病','Hikikomori':'ひきこもり','Bullying':'いじめ','Medical':'医療','Teacher':'教師','College':'大学','Boarding School':'寄宿学校','Delinquents':'不良','Otaku Culture':'オタク文化','Alternate Universe':'並行世界','Parallel Worlds':'パラレルワールド','Memory Manipulation':'記憶操作','Amnesia':'記憶喪失','Body Swapping':'入れ替わり','Shapeshifting':'変身','Transformation':'変身','Disability':'障害','Death Game':'デスゲーム','Battle Royale':'バトルロイヤル','Tournament':'トーナメント','Kingdom Management':'国家運営','Law and Order':'法と秩序','Espionage':'諜報','Assassins':'暗殺者','Terrorism':'テロ','Age Gap':'年の差','Arranged Marriage':'政略結婚','Marriage':'結婚','Family Life':'家族','Siblings':'兄弟姉妹','Childcare':'育児','Found Family':'擬似家族','Travel':'旅','Camping':'キャンプ','Fishing':'釣り','Mountaineering':'登山','Agriculture':'農業','Calligraphy':'書道','Classic Literature':'古典文学','Photography':'写真','Acting':'演技','Writing':'執筆','Anthology':'オムニバス','Episodic':'一話完結','Lost Civilization':'失われた文明','Cosmic Horror':'コズミックホラー','Urban Fantasy':'現代ファンタジー','Rural':'田舎','Philosophy':'哲学','Religion':'宗教','Fugitive':'逃亡者','Mixed Gender Harem':'男女ハーレム','Female Harem':'女性ハーレム','Male Harem':'男性ハーレム','Henshin':'変身ヒーロー','Kaiju':'怪獣','Dinosaurs':'恐竜','Animals':'動物','Cats':'猫','Dogs':'犬','Cars':'車','Trains':'電車','Aviation':'航空','Wuxia':'武侠','Cultivation':'修仙','Chibi':'ちび','CGI':'CG','Rotoscoping':'ロトスコープ','Heist':'強盗・怪盗','Conspiracy':'陰謀','Betrayal':'裏切り','Torture':'拷問','Cannibalism':'人食い','Drugs':'薬物','Alchemy':'錬金術','Necromancy':'死霊術','Fairy Tale':'おとぎ話','Wilderness':'大自然','Environmental':'環境','Economics':'経済','Software Development':'ソフト開発','Augmented Reality':'拡張現実','Memory':'記憶','Dissociative Identities':'多重人格','Class Struggle':'階級闘争','Afterlife':'あの世','Real Robot':'リアルロボット','Super Robot':'スーパーロボット','Mixed Martial Arts':'総合格闘技','Wrestling':'プロレス','Fencing':'フェンシング','Archery':'弓道','Rugby':'ラグビー','Skiing':'スキー','Cycling':'自転車','Horticulture':'園芸'
+};
+const ja=s=>JA[s]||s;
 function titleOf(it){return it.native||it.romaji||it.english||'(無題)'}
 function remember(items){items.forEach(it=>metaCache.set(it.id,it));return items}
 
@@ -286,7 +292,14 @@ function buildProfile(){
   if(!rs.length)return{n:0,mean:0,w:{}};
   const mean=rs.reduce((a,r)=>a+r.score,0)/rs.length;
   const num={},den={};
-  rs.forEach(r=>{const dev=r.score-mean;feats(r).forEach(([k,w])=>{num[k]=(num[k]||0)+w*dev;den[k]=(den[k]||0)+w})});
+  // 評価済み: 平均との差（お気に入りは+1.5上乗せ）。評価なしのお気に入りは強め(+2)、気になるは弱め(+1)の好みシグナルとして加味
+  const samples=[];
+  entries().forEach(r=>{
+    if(r.score>0)samples.push([r,r.score-mean+(r.fav?1.5:0),1]);
+    else if(r.fav)samples.push([r,2,.8]);
+    else if(r.want)samples.push([r,1,.5]);
+  });
+  samples.forEach(([r,dev,sw])=>{feats(r).forEach(([k,w])=>{num[k]=(num[k]||0)+w*sw*dev;den[k]=(den[k]||0)+w*sw})});
   const w={};Object.keys(num).forEach(k=>{w[k]={weight:num[k]/(den[k]+1.5),count:den[k]}});
   return{n:rs.length,mean,w};
 }
@@ -673,9 +686,9 @@ function cardHtml(it,rec,prof){
     <div class="cover" style="background-image:url('${esc(it.cover)}')">${rated?`<span class="score">${r.score}</span>`:''}</div>
     <div class="cbody">
       <div class="ctitle">${esc(titleOf(it))}</div>
-      <div class="meta">${esc(it.genres.slice(0,3).join(' / '))}${it.avg?` ・ ★${it.avg}`:''}${it.episodes?` ・ ${it.episodes}話`:''}</div>
+      <div class="meta">${esc(it.genres.slice(0,3).map(ja).join(' / '))}${it.avg?` ・ ★${it.avg}`:''}${it.episodes?` ・ ${it.episodes}話`:''}</div>
       <div class="bd">${badgesHtml(it.id)}</div>
-      ${showMatch?`<div class="reason">相性 ${rc.match}%${rc.reasons.length?'　◎ '+esc(rc.reasons.join('・')):''}</div>`:''}
+      ${showMatch?`<div class="reason">相性 ${rc.match}%${rc.reasons.length?'　◎ '+esc(rc.reasons.map(ja).join('・')):''}</div>`:''}
       ${ctrlHtml(it.id)}
     </div></div>`;
 }
@@ -722,7 +735,7 @@ function renderMine(m){
 function renderTaste(m){
   const prof=buildProfile();
   if(prof.n<3){m.innerHTML=`<div class="panel"><h2>好み分析</h2><p class="hint">評価が${prof.n}件です。3件以上つけると、好きな/苦手なジャンル・タグを集計します。</p></div>`;return}
-  const entries=Object.entries(prof.w).filter(([,e])=>e.count>=1.2).map(([k,e])=>({k,label:k.slice(2),kind:k[0]==='g'?'ジャンル':'タグ',w:e.weight}));
+  const entries=Object.entries(prof.w).filter(([,e])=>e.count>=1.2).map(([k,e])=>({k,label:ja(k.slice(2)),kind:k[0]==='g'?'ジャンル':'タグ',w:e.weight}));
   const pos=entries.filter(e=>e.w>0).sort((a,b)=>b.w-a.w).slice(0,8);
   const neg=entries.filter(e=>e.w<0).sort((a,b)=>a.w-b.w).slice(0,8);
   const mx=Math.max(.5,...entries.map(e=>Math.abs(e.w)));
@@ -732,6 +745,7 @@ function renderTaste(m){
   m.innerHTML=`
   <div class="panel"><h2>あなたの評価サマリー</h2>
     <p>評価数 <b>${prof.n}</b> 作品 ／ 平均 <b>${prof.mean.toFixed(2)}</b></p>
+    <p class="hint">おすすめの計算では、お気に入り（♥）は高評価として強め、「気になる」は弱めの好みとして加味しています。</p>
     <div style="display:flex;gap:6px;align-items:flex-end;height:80px">${dist.map((c,i)=>`<div style="flex:1;text-align:center"><div style="background:var(--accent);height:${c/dmax*60}px;border-radius:4px 4px 0 0;min-height:${c?3:0}px"></div><div class="hint">${i+1}</div></div>`).join('')}</div>
   </div>
   <div class="two"><div class="panel"><h2>好きな傾向 👍</h2>${bars(pos,'pos')}</div><div class="panel"><h2>苦手な傾向 👎</h2>${bars(neg,'neg')}</div></div>
@@ -838,8 +852,8 @@ function openModal(id){
     <div class="mhead"><div class="mc" style="background-image:url('${esc(it.cover)}')"></div>
       <div style="min-width:0"><h2>${esc(titleOf(it))}</h2>
         <div class="meta">${esc([it.romaji!==titleOf(it)?it.romaji:'',it.studio,it.episodes?it.episodes+'話':'',it.avg?'★'+it.avg:''].filter(Boolean).join(' ・ '))}</div>
-        <div style="margin:8px 0">${it.genres.map(g=>`<span class="pill">${esc(g)}</span>`).join('')}${it.tags.map(t=>`<span class="pill">#${esc(t)}</span>`).join('')}</div>
-        ${prof.n>=3&&rc.match!=null?`<div class="reason">相性 ${rc.match}%${rc.reasons.length?'　◎ '+esc(rc.reasons.join('・')):''}${rc.cons.length?'　△ '+esc(rc.cons.join('・')):''}</div>`:''}
+        <div style="margin:8px 0">${it.genres.map(g=>`<span class="pill">${esc(ja(g))}</span>`).join('')}${it.tags.map(t=>`<span class="pill">#${esc(ja(t))}</span>`).join('')}</div>
+        ${prof.n>=3&&rc.match!=null?`<div class="reason">相性 ${rc.match}%${rc.reasons.length?'　◎ '+esc(rc.reasons.map(ja).join('・')):''}${rc.cons.length?'　△ '+esc(rc.cons.map(ja).join('・')):''}</div>`:''}
         <p><a href="${esc(it.url)}" target="_blank" rel="noopener" style="color:var(--accent2)">AniListで開く ↗</a></p>
       </div></div>
     <div class="mbody">
