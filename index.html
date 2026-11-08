@@ -156,7 +156,7 @@ const SORD={WINTER:1,SPRING:2,SUMMER:3,FALL:4};
 function curSeason(d=new Date()){const m=d.getMonth()+1;return{year:d.getFullYear(),season:m<=3?'WINTER':m<=6?'SPRING':m<=9?'SUMMER':'FALL'}}
 const S0=curSeason();
 const ui={tab:'season',year:S0.year,season:S0.season,items:[],loading:false,error:'',sort:'auto',onlyUnrated:false,svc:'all',
-  query:'',searchResults:null,mySort:'new',mineF:'all',state:'all',cols:2,ona:true,cours:[],loaded:0,loadTok:0,busyMore:false,rank:new Map(),shown:new Set(),resort:true,streamBusy:0,promptSeason:null};
+  query:'',searchResults:null,mySort:'group',mineF:'all',state:'all',cols:2,ona:true,cours:[],loaded:0,loadTok:0,busyMore:false,rank:new Map(),shown:new Set(),resort:true,streamBusy:0,promptSeason:null};
 
 function saveLocal(){db.updated_at=nowIso();lsSet(LS_DB,db)}
 function save(){saveLocal();scheduleSync()}
@@ -293,7 +293,13 @@ function isWatched(id){const r=db.ratings[id];return !!(r&&!r.deleted&&(r.watche
 function isFav(id){const r=db.ratings[id];return !!(r&&!r.deleted&&r.fav)}
 function isWant(id){const r=db.ratings[id];return !!(r&&!r.deleted&&r.want)}
 function feats(o){const f=[];(o.genres||[]).forEach(g=>f.push(['g:'+g,1]));(o.tags||[]).forEach(t=>f.push(['t:'+t,.6]));return f}
+let profMemo=null;
 function buildProfile(){
+  const key=(db.updated_at||'')+'|'+Object.keys(db.ratings).length;
+  if(profMemo&&profMemo.key===key)return profMemo.v;
+  const v=computeProfile();profMemo={key,v};return v;
+}
+function computeProfile(){
   const rs=activeRatings();
   if(!rs.length)return{n:0,mean:0,w:{}};
   const mean=rs.reduce((a,r)=>a+r.score,0)/rs.length;
@@ -305,21 +311,88 @@ function buildProfile(){
     else if(r.fav)samples.push([r,2,.8]);
     else if(r.want)samples.push([r,1,.5]);
   });
-  samples.forEach(([r,dev,sw])=>{feats(r).forEach(([k,w])=>{num[k]=(num[k]||0)+w*sw*dev;den[k]=(den[k]||0)+w*sw})});
+  const sampleById=new Map();
+  samples.forEach(([r,dev,sw])=>{
+    const fm=new Map(feats(r));sampleById.set(String(r.id),{dev,sw,fmap:fm});
+    fm.forEach((w,k)=>{num[k]=(num[k]||0)+w*sw*dev;den[k]=(den[k]||0)+w*sw});
+  });
   const w={};Object.keys(num).forEach(k=>{w[k]={weight:num[k]/(den[k]+1.5),count:den[k]}});
-  return{n:rs.length,mean,w};
+  const prof={n:rs.length,mean,w,num,den,sampleById};
+  // 似ている作品を探す部品（評価済み＋評価なしのお気に入り）。珍しいジャンル/タグほど重く見る(IDF)
+  const vecs=[];
+  entries().forEach(r=>{
+    let eff=null;
+    if(r.score>0)eff=r.score+(r.fav?1:0);else if(r.fav)eff=mean+1.5;
+    if(eff==null)return;
+    vecs.push({id:String(r.id),title:r.title,score:r.score>0?r.score:0,eff,f:feats(r)});
+  });
+  const df={};vecs.forEach(v=>v.f.forEach(([k])=>{df[k]=(df[k]||0)+1}));
+  const N=vecs.length;
+  prof.idf=k=>Math.log((N+1)/((df[k]||0)+1))+1;
+  vecs.forEach(v=>{const m=new Map();let s=0;v.f.forEach(([k,x])=>{const val=x*prof.idf(k);m.set(k,val);s+=val*val});v.m=m;v.norm=Math.sqrt(s)||1});
+  prof.vecs=vecs;
+  calibrate(prof);
+  return prof;
+}
+// 作品の「好みとの近さ」z（点数の偏差の目安）。skipId: 検証用に自分自身を除いて予測する
+function predictZ(it,prof,skipId){
+  const f=feats(it);if(!f.length)return{z:0,sims:[]};
+  const sm=skipId!=null?prof.sampleById.get(skipId):null;
+  let sum=0,wsum=0;
+  f.forEach(([k,x])=>{
+    let nk=prof.num[k]||0,dk=prof.den[k]||0;
+    if(sm){const fx=sm.fmap.get(k);if(fx){nk-=fx*sm.sw*sm.dev;dk-=fx*sm.sw}}
+    sum+=(dk>0?nk/(dk+1.5):0)*x;wsum+=x;
+  });
+  const a=wsum?sum/wsum:0;
+  const cm=new Map();let s2=0;
+  f.forEach(([k,x])=>{const val=x*prof.idf(k);cm.set(k,val);s2+=val*val});
+  const cn=Math.sqrt(s2)||1;
+  const sims=[];
+  prof.vecs.forEach(v=>{
+    if(v.id===skipId)return;
+    let dot=0;cm.forEach((val,k)=>{const o=v.m.get(k);if(o)dot+=val*o});
+    const sc=dot/(cn*v.norm);if(sc>0)sims.push({v,s:sc});
+  });
+  sims.sort((x,y)=>y.s-x.s);
+  const top=sims.slice(0,4);
+  let kn=0;
+  if(top.length){let ws=0,ss=0;top.forEach(t=>{const q=t.s*t.s;ws+=q;ss+=q*t.v.eff});kn=ss/ws-prof.mean}
+  return{z:0.4*a+0.6*kn,sims:top.map(t=>({title:t.v.title,score:t.v.score,s:t.s}))};
+}
+// 自分の評価で予測を検証し（1件ずつ除いて予測）、zを「高評価になる確率」に換算する
+function calibrate(prof){
+  const rated=activeRatings();const n=rated.length;
+  prof.cal={a:3,b:0,T:null,auc:null,n};
+  if(n<8)return;
+  const sc=rated.map(r=>r.score).sort((x,y)=>x-y);
+  const T=sc[Math.floor(n*0.65)];
+  const data=rated.map(r=>({z:predictZ(r,prof,String(r.id)).z,y:r.score>=T?1:0}));
+  const pos=data.filter(d=>d.y).length,neg=n-pos;
+  if(pos<3||neg<3)return;
+  let a=1,b=Math.log(pos/neg);
+  for(let it=0;it<40;it++){
+    let ga=0,gb=0,haa=1e-3,hab=0,hbb=1e-3;
+    data.forEach(d=>{const p=1/(1+Math.exp(-(a*d.z+b)));const q=p*(1-p);
+      ga+=(p-d.y)*d.z;gb+=(p-d.y);haa+=q*d.z*d.z;hab+=q*d.z;hbb+=q});
+    const det=haa*hbb-hab*hab;if(Math.abs(det)<1e-12)break;
+    const da=(hbb*ga-hab*gb)/det,db_=(haa*gb-hab*ga)/det;
+    a-=da;b-=db_;a=Math.max(0.5,Math.min(40,a));
+  }
+  let win=0;data.filter(d=>d.y).forEach(p=>data.filter(d=>!d.y).forEach(q=>{win+=p.z>q.z?1:p.z===q.z?.5:0}));
+  prof.cal={a,b,T,auc:win/(pos*neg),n};
 }
 function recommend(it,prof){
-  const f=feats(it);if(!f.length)return{match:null,reasons:[],cons:[]};
-  let sum=0,wsum=0;const contrib=[];
-  f.forEach(([k,w])=>{const e=prof.w[k];const val=e?e.weight:0;sum+=val*w;wsum+=w;if(e)contrib.push([k,val*w])});
-  let raw=wsum?sum/wsum*2:0;
-  if(it.avg)raw+=(it.avg-70)/20*.4;
-  const match=Math.round(100/(1+Math.exp(-raw*.9)));
+  const f=feats(it);if(!f.length||prof.n<3)return{match:null,reasons:[],cons:[],sims:[]};
+  const pr=predictZ(it,prof,null);
+  let z=pr.z;if(it.avg)z+=(it.avg-75)/100;
+  const cl=prof.cal||{a:3,b:0};
+  const match=Math.round(100/(1+Math.exp(-(cl.a*z+cl.b))));
+  const contrib=[];f.forEach(([k,w])=>{const e=prof.w[k];if(e)contrib.push([k,e.weight*w])});
   const label=k=>k.slice(2);
-  const reasons=contrib.filter(c=>c[1]>0.15).sort((a,b)=>b[1]-a[1]).slice(0,3).map(c=>label(c[0]));
-  const cons=contrib.filter(c=>c[1]<-0.15).sort((a,b)=>a[1]-b[1]).slice(0,2).map(c=>label(c[0]));
-  return{match,reasons,cons};
+  const reasons=contrib.filter(c=>c[1]>0.15).sort((x,y)=>y[1]-x[1]).slice(0,3).map(c=>label(c[0]));
+  const cons=contrib.filter(c=>c[1]<-0.15).sort((x,y)=>x[1]-y[1]).slice(0,2).map(c=>label(c[0]));
+  return{match,reasons,cons,sims:pr.sims};
 }
 
 /* =============== data ops =============== */
@@ -710,6 +783,7 @@ function avgChip(it){
   const cls=it.avg>=80?'hi':it.avg>=70?'mid':'';
   return`<span class="avg ${cls}" title="AniListの平均スコア（みんなの評価）">★${v}<small>平均</small></span>`;
 }
+const simsTxt=rc=>rc.sims&&rc.sims.length?'　似てる: '+esc(rc.sims.slice(0,2).map(x=>(x.title.length>14?x.title.slice(0,14)+'…':x.title)+'('+(x.score||'♥')+')').join('・')):'';
 function cardHtml(it,rec,prof){
   const r=db.ratings[it.id],rated=isRated(it.id);
   const rc=rec.get(it.id);
@@ -720,7 +794,7 @@ function cardHtml(it,rec,prof){
       <div class="trow"><div class="ctitle">${esc(titleOf(it))}</div>${avgChip(it)}</div>
       <div class="meta">${esc(it.genres.slice(0,3).map(ja).join(' / '))}${it.episodes?` ・ ${it.episodes}話`:''}</div>
       <div class="bd">${badgesHtml(it.id)}</div>
-      ${showMatch?`<div class="reason">相性 ${rc.match}%${rc.reasons.length?'　◎ '+esc(rc.reasons.map(ja).join('・')):''}</div>`:''}
+      ${showMatch?`<div class="reason">相性 ${rc.match}%${simsTxt(rc)}${rc.reasons.length?'　◎ '+esc(rc.reasons.map(ja).join('・')):''}</div>`:''}
       ${ctrlHtml(it.id)}
     </div></div>`;
 }
@@ -752,16 +826,22 @@ function renderSeasonGridRaw(){
 }
 
 /* ---- my ratings ---- */
+function mineCard(r){return`<div class="card item" data-id="${r.id}">
+      <div class="cover" style="background-image:url('${esc(r.cover)}')">${r.score>0?`<span class="score">${r.score}</span>`:''}</div>
+      <div class="cbody"><div class="ctitle">${esc(r.title)}</div><div class="meta">${esc(r.season||'')}</div><div class="bd">${badgesHtml(r.id)}</div>${ctrlHtml(r.id)}</div></div>`}
+function mineHtml(rs){
+  if(ui.mySort!=='group')return rs.map(mineCard).join('');
+  const g={};rs.forEach(r=>{const k=r.score>0?r.score:0;(g[k]=g[k]||[]).push(r)});
+  return Object.keys(g).map(Number).sort((a,b)=>b-a).map(k=>`<h3 class="gh">${k>0?k+'点':'評価なし（視聴済み・気になる・お気に入りのみ）'}　<span class="hint">${g[k].length}作品</span></h3>`+g[k].map(mineCard).join('')).join('');
+}
 function renderMine(m){
   let rs=entries().filter(r=>ui.mineF==='all'||(ui.mineF==='watched'&&(r.watched||r.score>0))||(ui.mineF==='fav'&&r.fav)||(ui.mineF==='want'&&r.want)||(ui.mineF==='unrated'&&r.watched&&!(r.score>0)));
-  rs.sort((a,b)=>ui.mySort==='high'?b.score-a.score||(b.updated_at||'').localeCompare(a.updated_at||''):(b.updated_at||'').localeCompare(a.updated_at||''));
-  m.innerHTML=`<div class="stick"><div class="toolbar"><select id="mySort"><option value="new" ${ui.mySort==='new'?'selected':''}>新しい順</option><option value="high" ${ui.mySort==='high'?'selected':''}>高評価順</option></select>
+  rs.sort((a,b)=>(ui.mySort==='high'||ui.mySort==='group')?b.score-a.score||(b.updated_at||'').localeCompare(a.updated_at||''):(b.updated_at||'').localeCompare(a.updated_at||''));
+  m.innerHTML=`<div class="stick"><div class="toolbar"><select id="mySort"><option value="group" ${ui.mySort==='group'?'selected':''}>点数別（10→1）</option><option value="new" ${ui.mySort==='new'?'selected':''}>新しい順</option><option value="high" ${ui.mySort==='high'?'selected':''}>高評価順</option></select>
     <select id="mineF"><option value="all">すべて</option><option value="watched" ${ui.mineF==='watched'?'selected':''}>視聴済み</option><option value="want" ${ui.mineF==='want'?'selected':''}>気になる（今後みたい）</option><option value="fav" ${ui.mineF==='fav'?'selected':''}>お気に入り</option><option value="unrated" ${ui.mineF==='unrated'?'selected':''}>視聴済み・未評価</option></select>
     <button class="btn" id="colBtn2">表示: ${ui.cols}列</button>
     <span class="hint">${rs.length}作品</span></div></div>
-    <div class="grid" id="mgrid" style="--cols:${ui.cols}">${rs.length?rs.map(r=>`<div class="card item" data-id="${r.id}">
-      <div class="cover" style="background-image:url('${esc(r.cover)}')">${r.score>0?`<span class="score">${r.score}</span>`:''}</div>
-      <div class="cbody"><div class="ctitle">${esc(r.title)}</div><div class="meta">${esc(r.season||'')}</div><div class="bd">${badgesHtml(r.id)}</div>${ctrlHtml(r.id)}</div></div>`).join(''):'<div class="empty" style="grid-column:1/-1">該当する作品がありません。「クール」タブの一覧から評価・視聴済み・お気に入りを付けましょう。</div>'}</div>`;
+    <div class="grid" id="mgrid" style="--cols:${ui.cols}">${rs.length?mineHtml(rs):'<div class="empty" style="grid-column:1/-1">該当する作品がありません。「クール」タブの一覧から評価・視聴済み・お気に入りを付けましょう。</div>'}</div>`;
   $('#mySort').onchange=e=>{ui.mySort=e.target.value;renderMine(m)};
   $('#mineF').onchange=e=>{ui.mineF=e.target.value;renderMine(m)};
   $('#colBtn2').onclick=()=>{ui.cols=ui.cols===2?1:2;$('#colBtn2').textContent='表示: '+ui.cols+'列';$('#mgrid').style.setProperty('--cols',ui.cols)};
@@ -784,6 +864,8 @@ function renderTaste(m){
   <div class="panel"><h2>あなたの評価サマリー</h2>
     <p>評価数 <b>${prof.n}</b> 作品 ／ 平均 <b>${prof.mean.toFixed(2)}</b></p>
     <p class="hint">おすすめの計算では、お気に入り（♥）は高評価として強め、「気になる」は弱めの好みとして加味しています。</p>
+    ${prof.cal&&prof.cal.auc!=null?`<p class="hint">🎯 <b>予測の当たり具合</b>: あなたの${prof.cal.n}件の評価を1件ずつ隠して予測したところ、${prof.cal.T}点以上の作品を、そうでない作品より上に並べられた確率は <b>${(prof.cal.auc*100).toFixed(0)}%</b>（50%=でたらめ、100%=完璧）でした。「相性%」は「${prof.cal.T}点以上をつけそうな確率」の目安で、「似てる:」は特徴が近い評価済み作品です。</p>`:''}
+    ${activeRatings().filter(r=>r.score<=5).length<5?'<p class="hint">💡 6点以下の評価がほとんどないため、「苦手な傾向」を学べていません。途中でやめた作品や合わなかった作品にも低めの点数をつけると、精度が上がります。</p>':''}
     <div style="display:flex;gap:6px;align-items:flex-end;height:80px">${dist.map((c,i)=>`<div style="flex:1;text-align:center"><div style="background:var(--accent);height:${c/dmax*60}px;border-radius:4px 4px 0 0;min-height:${c?3:0}px"></div><div class="hint">${i+1}</div></div>`).join('')}</div>
   </div>
   <div class="two"><div class="panel"><h2>好きな傾向 👍</h2>${bars(pos,'pos')}</div><div class="panel"><h2>苦手な傾向 👎</h2>${bars(neg,'neg')}</div></div>
@@ -892,7 +974,7 @@ function openModal(id){
       <div style="min-width:0"><h2>${esc(titleOf(it))}</h2>${it.avg?`<div style="margin:2px 0 8px">${avgChip(it)}</div>`:''}
         <div class="meta">${esc([it.romaji!==titleOf(it)?it.romaji:'',it.studio,it.episodes?it.episodes+'話':''].filter(Boolean).join(' ・ '))}</div>
         <div style="margin:8px 0">${it.genres.map(g=>`<span class="pill">${esc(ja(g))}</span>`).join('')}${it.tags.map(t=>`<span class="pill">#${esc(ja(t))}</span>`).join('')}</div>
-        ${prof.n>=3&&rc.match!=null?`<div class="reason">相性 ${rc.match}%${rc.reasons.length?'　◎ '+esc(rc.reasons.map(ja).join('・')):''}${rc.cons.length?'　△ '+esc(rc.cons.map(ja).join('・')):''}</div>`:''}
+        ${prof.n>=3&&rc.match!=null?`<div class="reason">相性 ${rc.match}%${simsTxt(rc)}${rc.reasons.length?'　◎ '+esc(rc.reasons.map(ja).join('・')):''}${rc.cons.length?'　△ '+esc(rc.cons.map(ja).join('・')):''}</div>`:''}
         <p><a href="${esc(it.url)}" target="_blank" rel="noopener" style="color:var(--accent2)">AniListで開く ↗</a></p>
       </div></div>
     <div class="mbody">
