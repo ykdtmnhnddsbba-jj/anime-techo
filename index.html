@@ -43,6 +43,8 @@ label.chk{display:flex;gap:6px;align-items:center;color:var(--sub);font-size:14p
 .badge{font-size:11px;font-weight:700;padding:2px 7px;border-radius:6px;color:#fff}
 .badge.prime{background:var(--prime);color:#04202e}
 .badge.netflix{background:var(--netflix)}
+a.badge{text-decoration:none;cursor:pointer}
+a.badge:hover{filter:brightness(1.15);text-decoration:underline}
 .badge.hint{background:rgba(0,0,0,.65);border:1px dashed #aaa;color:#ddd}
 .cbody{padding:9px 10px 11px;display:flex;flex-direction:column;gap:4px}
 .ctitle{font-size:14px;font-weight:700;line-height:1.35;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
@@ -156,7 +158,7 @@ const seasonMem=new Map();     // 'YYYY-SEASON' -> items（通信・保存の節
 const SORD={WINTER:1,SPRING:2,SUMMER:3,FALL:4};
 function curSeason(d=new Date()){const m=d.getMonth()+1;return{year:d.getFullYear(),season:m<=3?'WINTER':m<=6?'SPRING':m<=9?'SUMMER':'FALL'}}
 const S0=curSeason();
-const ui={tab:'season',year:S0.year,season:S0.season,items:[],loading:false,error:'',sort:'auto',onlyUnrated:false,svc:'all',
+const ui={tab:'season',year:S0.year,season:S0.season,items:[],loading:false,error:'',sort:'auto',onlyUnrated:false,svc:'either',
   query:'',searchResults:null,mySort:'group',mineF:'all',state:'all',cols:2,ona:true,cours:[],loaded:0,loadTok:0,busyMore:false,rank:new Map(),shown:new Set(),resort:true,streamBusy:0,promptSeason:null};
 
 function saveLocal(){db.updated_at=nowIso();lsSet(LS_DB,db)}
@@ -166,7 +168,7 @@ function saveSettings(){lsSet(LS_SET,settings)}
 /* =============== AniList =============== */
 const MEDIA_FIELDS=`id title{romaji english native} coverImage{large} genres tags{name rank isMediaSpoiler}
  averageScore popularity description(asHtml:false) episodes season seasonYear siteUrl
- studios(isMain:true){nodes{name}} externalLinks{site type}`;
+ studios(isMain:true){nodes{name}} externalLinks{site type url}`;
 async function anilist(query,variables){
   const r=await fetch('https://graphql.anilist.co',{method:'POST',headers:{'Content-Type':'application/json',Accept:'application/json'},body:JSON.stringify({query,variables})});
   if(r.status===429)throw new Error('AniListのアクセス制限中です。1分ほど待ってからやり直してください。');
@@ -176,13 +178,15 @@ async function anilist(query,variables){
 }
 function normItem(m){
   const tags=(m.tags||[]).filter(t=>!t.isMediaSpoiler&&t.rank>=50).slice(0,8).map(t=>t.name);
-  const links=(m.externalLinks||[]).filter(l=>l.type==='STREAMING').map(l=>l.site||'');
+  const ext=(m.externalLinks||[]).filter(l=>l.type==='STREAMING');const links=ext.map(l=>l.site||'');
+  const urlOf=re=>{const l=ext.find(x=>re.test(x.site||''));return l&&l.url||''};
   return{id:m.id,romaji:m.title.romaji||'',english:m.title.english||'',native:m.title.native||'',
     cover:(m.coverImage&&m.coverImage.large)||'',genres:m.genres||[],tags,
     avg:m.averageScore||null,pop:m.popularity||0,desc:(m.description||'').slice(0,320),
     episodes:m.episodes||null,studio:((m.studios&&m.studios.nodes[0])||{}).name||'',url:m.siteUrl||'',
     season:m.season||null,year:m.seasonYear||null,
-    links:{prime:links.some(s=>/amazon|prime/i.test(s)),netflix:links.some(s=>/netflix/i.test(s))}};
+    links:{prime:links.some(s=>/amazon|prime/i.test(s)),netflix:links.some(s=>/netflix/i.test(s))},
+    urls:{prime:urlOf(/amazon|prime/i),netflix:urlOf(/netflix/i)}};
 }
 // ジャンル・タグの日本語表示（保存データは英語のまま。ここにない語は英語のまま表示）
 const JA={
@@ -708,7 +712,7 @@ function renderSeason(m){
   $('#goSearch').onclick=doSearch;
   $('#q').onkeydown=e=>{if(e.key==='Enter')doSearch()};
   const bs=$('#backSeason');if(bs)bs.onclick=()=>{ui.searchResults=null;ui.query='';renderSeason(m)};
-  $('#grid').onclick=e=>{if(gridClick(e))return;if(!e.target.closest('.cover,.ctitle'))return;const c=e.target.closest('.card');if(c)openModal(+c.dataset.id)};
+  $('#grid').onclick=e=>{if(e.target.closest('a.badge'))return;if(gridClick(e))return;if(!e.target.closest('.cover,.ctitle'))return;const c=e.target.closest('.card');if(c)openModal(+c.dataset.id)};
   $('#grid').onchange=gridChange;
   renderSeasonGrid();updateStreamNote();updateMore();
   if(!ui.items.length&&!ui.searchResults&&!ui.loading&&!ui.error)loadSeason();
@@ -817,9 +821,18 @@ function visibleItems(){
   }
   return{items,rec,prof,multi};
 }
+// 配信サービスへのリンク。AniListに作品ページのURLがあればそれ（Primeは日本のAmazon/Prime Videoのみ）、なければサービス内の作品名検索
+function svcUrl(id,k){
+  const it=itemById(id)||{};
+  const u=(it.urls&&it.urls[k])||'';
+  if(k==='netflix'&&/^https?:\/\/([\w-]+\.)?netflix\.com\//i.test(u))return u;
+  if(k==='prime'&&/^https?:\/\/(www\.)?(amazon\.co\.jp|primevideo\.com)\//i.test(u))return u;
+  const q=encodeURIComponent(it.native||it.romaji||it.english||'');
+  return k==='netflix'?'https://www.netflix.com/search?q='+q:'https://www.amazon.co.jp/s?k='+q+'&i=instant-video';
+}
 function badgesHtml(id){
   const s=streamOf(id);let h='';
-  const one=(k,label,cls)=>{const x=s[k];if(x.v===true)h+=`<span class="badge ${x.src==='anilist'?'hint':cls}">${label}</span>`};
+  const one=(k,label,cls)=>{const x=s[k];if(x.v===true)h+=`<a class="badge ${x.src==='anilist'?'hint':cls}" href="${esc(svcUrl(id,k))}" target="_blank" rel="noopener" title="${label}で開く">${label}</a>`};
   one('prime','Prime','prime');one('netflix','Netflix','netflix');return h;
 }
 // AniListの平均スコア(0-100)を10点満点で目立たせる。8.0以上=金、7.0以上=緑
@@ -891,7 +904,7 @@ function renderMine(m){
   $('#mySort').onchange=e=>{ui.mySort=e.target.value;renderMine(m)};
   $('#mineF').onchange=e=>{ui.mineF=e.target.value;renderMine(m)};
   $('#colBtn2').onclick=()=>{ui.cols=ui.cols===2?1:2;$('#colBtn2').textContent='表示: '+ui.cols+'列';$('#mgrid').style.setProperty('--cols',ui.cols)};
-  $('#mgrid').onclick=e=>{if(gridClick(e))return;if(!e.target.closest('.cover,.ctitle'))return;const c=e.target.closest('.card');if(c)openModal(+c.dataset.id)};
+  $('#mgrid').onclick=e=>{if(e.target.closest('a.badge'))return;if(gridClick(e))return;if(!e.target.closest('.cover,.ctitle'))return;const c=e.target.closest('.card');if(c)openModal(+c.dataset.id)};
   $('#mgrid').onchange=gridChange;
 }
 
@@ -1012,7 +1025,7 @@ function openModal(id){
     const status=s.v===null?'未取得':s.v?'見放題あり':'なし';
     const src=s.src==='manual'?'（手動）':s.src==='tmdb'?'（TMDB/JustWatch）':s.src==='anilist'?'（AniListリンク・地域未確認）':'';
     const cur=ov[k]===true?'yes':ov[k]===false?'no':'auto';
-    return`<div class="sbox"><b>${label}</b>：${status}<span class="hint">${src}</span>
+    return`<div class="sbox"><b>${label}</b>：${status}<span class="hint">${src}</span> <a href="${esc(svcUrl(id,k))}" target="_blank" rel="noopener" style="color:var(--accent2)">開く ↗</a>
       <div class="field" style="margin:6px 0 0"><label>手動で上書き</label><select data-ov="${k}"><option value="auto" ${cur==='auto'?'selected':''}>自動</option><option value="yes" ${cur==='yes'?'selected':''}>見放題あり</option><option value="no" ${cur==='no'?'selected':''}>なし</option></select></div></div>`;
   };
   root.innerHTML=`<div class="ov" id="ov"><div class="modal">
