@@ -58,3 +58,10 @@
 ## 注意
 - 配信データは JustWatch（TMDB経由）です。アニメは照合ミスが起こりえるため、作品を開いて手動で上書きできます。
 - 個人利用（非商用）の範囲で使ってください（TMDB規約）。
+
+
+## 共通Googleログイン（2026-11）
+- Googleログインと Drive 同期の処理は `../portal/lib/techo-google.js`（portalリポジトリ）に1本化した。各手帖は `TechoGoogle.create({site,...})` を呼ぶだけ。
+- トークンは同じオリジン（ykdtmnhnddsbba-jj.github.io）の localStorage `techo_gauth_tok` に共有で保存。どれか1つの手帖でログインすれば、他の手帖も認証画面なしで同期できる。
+- 同期は `GA.syncFile(ファイル名, id, マージ関数, 本文関数)`。Drive の読み込みに失敗したら上書きせずに中止する（データ消失防止）。ファイルが404なら id を忘れて次回検索し直す。
+- portal の lib が読めない時もページ自体は表示される（同期だけ無効）。
