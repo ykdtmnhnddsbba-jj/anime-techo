@@ -160,7 +160,8 @@ const SORD={WINTER:1,SPRING:2,SUMMER:3,FALL:4};
 function curSeason(d=new Date()){const m=d.getMonth()+1;return{year:d.getFullYear(),season:m<=3?'WINTER':m<=6?'SPRING':m<=9?'SUMMER':'FALL'}}
 const S0=curSeason();
 const ui={tab:'season',year:S0.year,season:S0.season,items:[],loading:false,error:'',sort:'auto',onlyUnrated:false,svc:'either',
-  query:'',searchResults:null,mySort:'group',mineF:'all',state:'all',cols:2,ona:true,cours:[],loaded:0,loadTok:0,busyMore:false,rank:new Map(),shown:new Set(),resort:true,streamBusy:0,promptSeason:null};
+  query:'',searchResults:null,mySort:'group',mineF:'all',state:'all',cols:2,ona:true,cours:[],loaded:0,loadTok:0,busyMore:false,rank:new Map(),shown:new Set(),resort:true,streamBusy:0,promptSeason:null,
+  mKey:'NOW',mItems:[],mLoading:false,mError:'',mSort:'date',mSvc:'all',mQuery:'',mSearch:null,mLoaded:null};
 
 function saveLocal(){db.updated_at=nowIso();lsSet(LS_DB,db)}
 function save(){saveLocal();scheduleSync()}
@@ -168,7 +169,7 @@ function saveSettings(){lsSet(LS_SET,settings)}
 
 /* =============== AniList =============== */
 const MEDIA_FIELDS=`id title{romaji english native} coverImage{large} genres tags{name rank isMediaSpoiler}
- averageScore popularity description(asHtml:false) episodes season seasonYear siteUrl
+ averageScore popularity description(asHtml:false) episodes season seasonYear siteUrl format status duration startDate{year month day}
  studios(isMain:true){nodes{name}} externalLinks{site type url}`;
 async function anilist(query,variables){
   const r=await fetch('https://graphql.anilist.co',{method:'POST',headers:{'Content-Type':'application/json',Accept:'application/json'},body:JSON.stringify({query,variables})});
@@ -186,6 +187,8 @@ function normItem(m){
     avg:m.averageScore||null,pop:m.popularity||0,desc:(m.description||'').slice(0,320),
     episodes:m.episodes||null,studio:((m.studios&&m.studios.nodes[0])||{}).name||'',url:m.siteUrl||'',
     season:m.season||null,year:m.seasonYear||null,
+    format:m.format||'',status:m.status||'',duration:m.duration||null,
+    start:(m.startDate&&m.startDate.year)?{y:m.startDate.year,m:m.startDate.month||0,d:m.startDate.day||0}:null,
     links:{prime:links.some(s=>/amazon|prime/i.test(s)),netflix:links.some(s=>/netflix/i.test(s))},
     urls:{prime:urlOf(/amazon|prime/i),netflix:urlOf(/netflix/i)}};
 }
@@ -219,10 +222,40 @@ async function fetchSeason(year,season,force){
   lsSet(LS_CACHE,trimmed);
   return remember(items);
 }
-async function searchAnime(text){
-  const q=`query($q:String){Page(page:1,perPage:30){media(search:$q,type:ANIME,sort:SEARCH_MATCH,isAdult:false){${MEDIA_FIELDS}}}}`;
+async function searchAnime(text,onlyMovie){
+  const q=`query($q:String){Page(page:1,perPage:30){media(search:$q,type:ANIME,${onlyMovie?'format:MOVIE,':''}sort:SEARCH_MATCH,isAdult:false){${MEDIA_FIELDS}}}}`;
   const d=await anilist(q,{q:text});
   return remember(d.Page.media.map(normItem));
+}
+/* ---- 映画（AniList format=MOVIE。公開日は AniList の startDate＝主に日本での初公開日） ---- */
+const isMovie=it=>!!it&&it.format==='MOVIE';
+const ymd=d=>d.getFullYear()*10000+(d.getMonth()+1)*100+d.getDate();
+const startNum=it=>it.start?it.start.y*10000+(it.start.m||0)*100+(it.start.d||0):0;
+function startTxt(it){const s=it.start;if(!s)return'';return s.y+'年'+(s.m?s.m+'月':'')+(s.m&&s.d?s.d+'日':'')}
+// key: 'NOW'（最近公開＋公開予定）または西暦
+async function fetchMovies(key,force){
+  const ck='MOVIE-'+key;
+  const cache=lsGet(LS_CACHE,{});
+  if(!force&&seasonMem.has(ck))return remember(seasonMem.get(ck));
+  if(!force&&cache[ck]&&Date.now()-cache[ck].t<12*3600e3)return remember(cache[ck].items);
+  let lo,hi;
+  if(key==='NOW'){const a=new Date(),b=new Date();a.setDate(a.getDate()-120);b.setFullYear(b.getFullYear()+1);lo=ymd(a)-1;hi=ymd(b)+1}
+  else{lo=key*10000;hi=(key+1)*10000}
+  const q=`query($p:Int,$lo:FuzzyDateInt,$hi:FuzzyDateInt){Page(page:$p,perPage:50){pageInfo{hasNextPage}
+    media(type:ANIME,format:MOVIE,startDate_greater:$lo,startDate_lesser:$hi,sort:POPULARITY_DESC,isAdult:false){${MEDIA_FIELDS}}}}`;
+  let items=[];
+  for(let p=1;p<=3;p++){
+    const d=await anilist(q,{p,lo,hi});
+    items=items.concat(d.Page.media.map(normItem));
+    if(!d.Page.pageInfo.hasNextPage)break;
+    await sleep(400);
+  }
+  seasonMem.set(ck,items);
+  cache[ck]={t:Date.now(),items};
+  const keys=Object.keys(cache).sort((a,b)=>cache[b].t-cache[a].t).slice(0,14);
+  const trimmed={};keys.forEach(k=>trimmed[k]=cache[k]);
+  lsSet(LS_CACHE,trimmed);
+  return remember(items);
 }
 
 /* =============== TMDB streaming =============== */
@@ -241,18 +274,19 @@ async function tmdb(path,params={}){
 async function resolveStreaming(it){
   const names=[it.native,it.romaji,it.english].filter(Boolean);
   const nn=names.map(norm).filter(n=>n.length>=2);
-  let hit=null;
+  let hit=null;const mv=isMovie(it),kind=mv?'movie':'tv';
+  const yOk=r=>{if(!mv||!it.start)return true;const y=+String(r.release_date||'').slice(0,4);return !y||Math.abs(y-it.start.y)<=1};
   for(const q of names){
-    const d=await tmdb('/search/tv',{query:q,language:'ja-JP'});
-    hit=(d.results||[]).find(r=>(r.genre_ids||[]).includes(16)&&[r.name,r.original_name].map(norm).some(n=>n.length>=2&&nn.some(c=>n.includes(c)||c.includes(n))));
+    const d=await tmdb('/search/'+kind,{query:q,language:'ja-JP'});
+    hit=(d.results||[]).find(r=>(r.genre_ids||[]).includes(16)&&yOk(r)&&[r.name,r.original_name,r.title,r.original_title].filter(Boolean).map(norm).some(n=>n.length>=2&&nn.some(c=>n.includes(c)||c.includes(n))));
     if(hit)break;
   }
   let rec;
   if(hit){
-    const p=await tmdb(`/tv/${hit.id}/watch/providers`);
+    const p=await tmdb(`/${kind}/${hit.id}/watch/providers`);
     const flat=((p.results||{}).JP||{}).flatrate||[];
     const has=re=>flat.some(f=>re.test(f.provider_name||''));
-    rec={prime:has(/prime video|amazon/i),netflix:has(/netflix/i),source:'tmdb',tmdb_id:hit.id,overview_ja:(hit.overview||'').trim(),checked_at:nowIso()};
+    rec={prime:has(/prime video|amazon/i),netflix:has(/netflix/i),source:'tmdb',tmdb_id:hit.id,tmdb_kind:kind,overview_ja:(hit.overview||'').trim(),checked_at:nowIso()};
   }else{
     rec={prime:it.links.prime,netflix:it.links.netflix,source:(it.links.prime||it.links.netflix)?'anilist':'none',checked_at:nowIso()};
   }
@@ -283,7 +317,7 @@ async function pumpStream(){
       finally{
         streamRunning--;ui.streamBusy=streamRunning+streamQueue.length;
         if(!streamRunning&&!streamQueue.length)save();
-        clearTimeout(renderTimer);renderTimer=setTimeout(()=>{if(ui.tab==='season'){if(ui.svc==='all')patchBadges();else renderSeasonGrid()}updateStreamNote()},350);
+        clearTimeout(renderTimer);renderTimer=setTimeout(()=>{if(ui.tab==='season'){if(ui.svc==='all')patchBadges();else renderSeasonGrid()}else if(ui.tab==='movie'){if(ui.mSvc==='all')patchBadges();else renderMovieGrid()}updateStreamNote()},350);
         pumpStream();
       }
     })();
@@ -404,7 +438,8 @@ function recommend(it,prof){
 
 /* =============== data ops =============== */
 function snapshot(it){return{title:titleOf(it),title_native:it.native,cover:it.cover,
-  season:(it.year&&it.season)?it.year+'-'+it.season:'',genres:it.genres,tags:it.tags}}
+  season:(it.year&&it.season)?it.year+'-'+it.season:'',genres:it.genres,tags:it.tags,
+  ...(it.format?{format:it.format}:{}),...(it.start?{release:startTxt(it)}:{})}}
 function upsert(it,patch){
   const old=db.ratings[it.id];
   const live=(old&&!old.deleted)?old:null;
@@ -570,7 +605,7 @@ $('#syncChip').onclick=()=>{
 };
 
 /* =============== rendering =============== */
-const TABS=[['season','クール'],['mine','マイ評価'],['taste','好み分析'],['settings','設定']];
+const TABS=[['season','クール'],['movie','映画'],['mine','マイ評価'],['taste','好み分析'],['settings','設定']];
 function renderNav(){
   $('#nav').innerHTML=TABS.map(([k,l])=>`<button data-tab="${k}" class="${ui.tab===k?'on':''}">${l}</button>`).join('');
 }
@@ -579,6 +614,7 @@ function render(){
   renderNav();setSync(syncState);
   const m=$('#main');
   if(ui.tab==='season')renderSeason(m);
+  else if(ui.tab==='movie')renderMovie(m);
   else if(ui.tab==='mine')renderMine(m);
   else if(ui.tab==='taste')renderTaste(m);
   else renderSettings(m);
@@ -784,7 +820,7 @@ function cardHtml(it,rec,prof){
     <div class="cover" style="background-image:url('${esc(it.cover)}')">${rated?`<span class="score">${r.score}</span>`:''}</div>
     <div class="cbody">
       <div class="trow"><div class="ctitle">${esc(titleOf(it))}</div>${avgChip(it)}</div>
-      <div class="meta">${esc(it.genres.slice(0,3).map(ja).join(' / '))}${it.episodes?` ・ ${it.episodes}話`:''}</div>
+      <div class="meta">${esc(it.genres.slice(0,3).map(ja).join(' / '))}${isMovie(it)?(it.start?` ・ ${startTxt(it)}${startNum(it)>ymd(new Date())?'公開予定':'公開'}`:'')+(it.duration?` ・ ${it.duration}分`:''):(it.episodes?` ・ ${it.episodes}話`:'')}</div>
       <div class="bd">${badgesHtml(it.id)}</div>
       ${showMatch?`<div class="reason">相性 ${rc.match}%${simsTxt(rc)}${rc.reasons.length?'　◎ '+esc(rc.reasons.map(ja).join('・')):''}</div>`:''}
       ${ctrlHtml(it.id)}
@@ -817,20 +853,122 @@ function renderSeasonGridRaw(){
   g.innerHTML=items.length?items.map(it=>cardHtml(it,rec,prof)).join(''):'<div class="empty" style="grid-column:1/-1">表示できる作品がありません</div>';
 }
 
+/* ---- movie tab ---- */
+function renderMovie(m){
+  const years=[];for(let y=S0.year+1;y>=1980;y--)years.push(y);
+  m.innerHTML=`
+  <div class="stick">
+  <div class="toolbar">
+    <select id="mvKey"><option value="NOW" ${ui.mKey==='NOW'?'selected':''}>話題（最近公開・公開予定）</option>${years.map(y=>`<option value="${y}" ${y===ui.mKey?'selected':''}>${y}年公開</option>`).join('')}</select>
+    <input type="text" id="mq" placeholder="映画のタイトルで検索" value="${esc(ui.mQuery)}">
+    <button class="btn pri" id="mvGo">検索</button>
+    ${ui.mSearch?'<button class="btn" id="mvBack">一覧に戻る</button>':''}
+  </div>
+  <div class="toolbar">
+    <select id="mvSort">
+      <option value="date" ${ui.mSort==='date'?'selected':''}>並び: 公開日順</option>
+      <option value="auto" ${ui.mSort==='auto'?'selected':''}>並び: おすすめ順</option>
+      <option value="pop" ${ui.mSort==='pop'?'selected':''}>並び: 人気順</option>
+      <option value="avg" ${ui.mSort==='avg'?'selected':''}>並び: 平均スコア順</option>
+    </select>
+    <select id="mvSvc">
+      <option value="all" ${ui.mSvc==='all'?'selected':''}>配信: すべて</option>
+      <option value="prime" ${ui.mSvc==='prime'?'selected':''}>Prime Videoで見放題</option>
+      <option value="netflix" ${ui.mSvc==='netflix'?'selected':''}>Netflixで見放題</option>
+      <option value="either" ${ui.mSvc==='either'?'selected':''}>どちらかで見放題</option>
+    </select>
+    <select id="mvState">
+      <option value="all" ${ui.state==='all'?'selected':''}>状態: すべて</option>
+      <option value="unwatched" ${ui.state==='unwatched'?'selected':''}>未視聴のみ</option>
+      <option value="watched" ${ui.state==='watched'?'selected':''}>視聴済みのみ</option>
+      <option value="want" ${ui.state==='want'?'selected':''}>気になるのみ</option>
+      <option value="fav" ${ui.state==='fav'?'selected':''}>お気に入りのみ</option>
+    </select>
+    <button class="btn" id="mvReload">再読込</button>
+    <button class="btn" id="colBtn3">表示: ${ui.cols}列</button>
+    <span class="hint" id="streamNote"></span>
+  </div></div>
+  <div id="note"></div>
+  <div class="grid" id="grid" style="--cols:${ui.cols}"></div>`;
+  $('#mvKey').onchange=e=>{ui.mKey=e.target.value==='NOW'?'NOW':+e.target.value;ui.mSearch=null;ui.mQuery='';loadMovies()};
+  $('#mvSort').onchange=e=>{ui.mSort=e.target.value;renderMovieGrid()};
+  $('#mvSvc').onchange=e=>{ui.mSvc=e.target.value;renderMovieGrid()};
+  $('#mvState').onchange=e=>{ui.state=e.target.value;renderMovieGrid()};
+  $('#mvReload').onclick=()=>loadMovies(true);
+  $('#colBtn3').onclick=()=>{ui.cols=ui.cols===2?1:2;$('#colBtn3').textContent='表示: '+ui.cols+'列';$('#grid').style.setProperty('--cols',ui.cols)};
+  const doSearch=async()=>{
+    ui.mQuery=$('#mq').value.trim();if(!ui.mQuery){ui.mSearch=null;renderMovie(m);return}
+    ui.mLoading=true;ui.mError='';renderMovieGrid();
+    try{ui.mSearch=await searchAnime(ui.mQuery,true);queueStreaming(ui.mSearch)}catch(e){ui.mError=e.message}
+    ui.mLoading=false;if(ui.tab==='movie')renderMovie(m);
+  };
+  $('#mvGo').onclick=doSearch;
+  $('#mq').onkeydown=e=>{if(e.key==='Enter')doSearch()};
+  const bk=$('#mvBack');if(bk)bk.onclick=()=>{ui.mSearch=null;ui.mQuery='';renderMovie(m)};
+  $('#grid').onclick=e=>{if(e.target.closest('a.badge'))return;if(gridClick(e))return;if(!e.target.closest('.cover,.ctitle'))return;const c=e.target.closest('.card');if(c)openModal(+c.dataset.id)};
+  $('#grid').onchange=gridChange;
+  renderMovieGrid();updateStreamNote();
+  if(ui.mLoaded!==ui.mKey&&!ui.mLoading&&!ui.mSearch)loadMovies();
+}
+async function loadMovies(force){
+  const key=ui.mKey;ui.mLoading=true;ui.mError='';ui.mItems=[];renderMovieGrid();
+  try{const items=await fetchMovies(key,force);if(key!==ui.mKey)return;ui.mItems=items;ui.mLoaded=key;queueStreaming(items)}
+  catch(e){ui.mError=e.message}
+  ui.mLoading=false;if(ui.tab==='movie')renderMovieGrid();
+}
+function renderMovieGrid(){
+  const g=$('#grid'),note=$('#note');if(!g||!note)return;
+  if(ui.mLoading){note.innerHTML='<div class="empty"><span class="spin"></span>読み込み中…</div>';g.innerHTML='';return}
+  if(ui.mError){note.innerHTML=`<div class="panel" style="border-color:#6b2a35">${esc(ui.mError)}</div>`;g.innerHTML='';return}
+  const prof=buildProfile();
+  let items=(ui.mSearch||ui.mItems).slice();
+  const rec=new Map(items.map(it=>[it.id,recommend(it,prof)]));
+  items=items.filter(it=>{
+    if(ui.state==='unwatched'&&isWatched(it.id))return false;
+    if(ui.state==='watched'&&!isWatched(it.id))return false;
+    if(ui.state==='want'&&!isWant(it.id))return false;
+    if(ui.state==='fav'&&!isFav(it.id))return false;
+    if(ui.state==='dropped'&&!isDropped(it.id))return false;
+    if(ui.mSvc!=='all'){
+      const s=streamOf(it.id);
+      const ok=ui.mSvc==='prime'?s.prime.v===true:ui.mSvc==='netflix'?s.netflix.v===true:(s.prime.v===true||s.netflix.v===true);
+      if(!ok)return false;
+    }
+    return true;
+  });
+  const today=ymd(new Date());
+  const upcoming=it=>startNum(it)>today||it.status==='NOT_YET_RELEASED';
+  const grouped=!ui.mSearch&&ui.mKey==='NOW';
+  const cmp=ui.mSort==='pop'?(a,b)=>b.pop-a.pop:ui.mSort==='avg'?(a,b)=>(b.avg||0)-(a.avg||0):
+    (ui.mSort==='auto'&&prof.n>=3)?(a,b)=>rec.get(b.id).match-rec.get(a.id).match:
+    // 公開日順: 公開予定は近い順、公開済みは新しい順
+    (a,b)=>{const ua=upcoming(a),ub=upcoming(b);if(ua!==ub)return ua?-1:1;return ua?startNum(a)-startNum(b):startNum(b)-startNum(a)};
+  items.sort(grouped?(a,b)=>(upcoming(b)-upcoming(a))||cmp(a,b):cmp);
+  note.innerHTML=ui.mSearch?`<p class="hint">「${esc(ui.mQuery)}」の検索結果 ${ui.mSearch.length}件（映画のみ）</p>`:
+    `<p class="hint">🎬 アニメ映画 ${items.length}作品。公開日は AniList の初公開日（主に日本）。映画館での上映状況は各劇場で確認してください。</p>`;
+  if(!items.length){g.innerHTML='<div class="empty" style="grid-column:1/-1">表示できる作品がありません</div>';return}
+  if(grouped){
+    let html='',cur=null;
+    items.forEach(it=>{const u=upcoming(it);if(u!==cur){cur=u;html+=`<h3 class="gh">${u?'公開予定':'最近公開（4か月以内）'}</h3>`}html+=cardHtml(it,rec,prof)});
+    g.innerHTML=html;return;
+  }
+  g.innerHTML=items.map(it=>cardHtml(it,rec,prof)).join('');
+}
+
 /* ---- my ratings ---- */
 function mineCard(r){return`<div class="card item" data-id="${r.id}">
       <div class="cover" style="background-image:url('${esc(r.cover)}')">${r.score>0?`<span class="score">${r.score}</span>`:''}</div>
-      <div class="cbody"><div class="ctitle">${esc(r.title)}</div><div class="meta">${esc(r.season||'')}</div><div class="bd">${badgesHtml(r.id)}</div>${ctrlHtml(r.id)}</div></div>`}
+      <div class="cbody"><div class="ctitle">${esc(r.title)}</div><div class="meta">${esc(r.format==='MOVIE'?'🎬 映画'+(r.release?' ・ '+r.release:''):(r.season||''))}</div><div class="bd">${badgesHtml(r.id)}</div>${ctrlHtml(r.id)}</div></div>`}
 function mineHtml(rs){
   if(ui.mySort!=='group')return rs.map(mineCard).join('');
   const g={};rs.forEach(r=>{const k=r.score>0?r.score:0;(g[k]=g[k]||[]).push(r)});
   return Object.keys(g).map(Number).sort((a,b)=>b-a).map(k=>`<h3 class="gh">${k>0?k+'点':'評価なし（視聴済み・気になる・お気に入りのみ）'}　<span class="hint">${g[k].length}作品</span></h3>`+g[k].map(mineCard).join('')).join('');
 }
 function renderMine(m){
-  let rs=entries().filter(r=>ui.mineF==='all'||(ui.mineF==='watched'&&(r.watched||r.score>0))||(ui.mineF==='fav'&&r.fav)||(ui.mineF==='want'&&r.want)||(ui.mineF==='dropped'&&r.dropped&&r.score>0)||(ui.mineF==='unrated'&&r.watched&&!(r.score>0)));
+  let rs=entries().filter(r=>ui.mineF==='all'||(ui.mineF==='watched'&&(r.watched||r.score>0))||(ui.mineF==='fav'&&r.fav)||(ui.mineF==='want'&&r.want)||(ui.mineF==='dropped'&&r.dropped&&r.score>0)||(ui.mineF==='unrated'&&r.watched&&!(r.score>0))||(ui.mineF==='movie'&&r.format==='MOVIE'));
   rs.sort((a,b)=>(ui.mySort==='high'||ui.mySort==='group')?b.score-a.score||(b.updated_at||'').localeCompare(a.updated_at||''):(b.updated_at||'').localeCompare(a.updated_at||''));
   m.innerHTML=`<div class="stick"><div class="toolbar"><select id="mySort"><option value="group" ${ui.mySort==='group'?'selected':''}>点数別（10→1）</option><option value="new" ${ui.mySort==='new'?'selected':''}>新しい順</option><option value="high" ${ui.mySort==='high'?'selected':''}>高評価順</option></select>
-    <select id="mineF"><option value="all">すべて</option><option value="watched" ${ui.mineF==='watched'?'selected':''}>視聴済み</option><option value="want" ${ui.mineF==='want'?'selected':''}>気になる（今後みたい）</option><option value="dropped" ${ui.mineF==='dropped'?'selected':''}>切った作品</option><option value="fav" ${ui.mineF==='fav'?'selected':''}>お気に入り</option><option value="unrated" ${ui.mineF==='unrated'?'selected':''}>視聴済み・未評価</option></select>
+    <select id="mineF"><option value="all">すべて</option><option value="watched" ${ui.mineF==='watched'?'selected':''}>視聴済み</option><option value="want" ${ui.mineF==='want'?'selected':''}>気になる（今後みたい）</option><option value="dropped" ${ui.mineF==='dropped'?'selected':''}>切った作品</option><option value="fav" ${ui.mineF==='fav'?'selected':''}>お気に入り</option><option value="unrated" ${ui.mineF==='unrated'?'selected':''}>視聴済み・未評価</option><option value="movie" ${ui.mineF==='movie'?'selected':''}>🎬 映画のみ</option></select>
     <button class="btn" id="colBtn2">表示: ${ui.cols}列</button>
     <span class="hint">${rs.length}作品</span></div></div>
     <div class="grid" id="mgrid" style="--cols:${ui.cols}">${rs.length?mineHtml(rs):'<div class="empty" style="grid-column:1/-1">該当する作品がありません。「クール」タブの一覧から評価・視聴済み・お気に入りを付けましょう。</div>'}</div>`;
@@ -964,7 +1102,7 @@ function openModal(id){
   root.innerHTML=`<div class="ov" id="ov"><div class="modal">
     <div class="mhead"><div class="mc" style="background-image:url('${esc(it.cover)}')"></div>
       <div style="min-width:0"><h2>${esc(titleOf(it))}</h2>${it.avg?`<div style="margin:2px 0 8px">${avgChip(it)}</div>`:''}
-        <div class="meta">${esc([it.romaji!==titleOf(it)?it.romaji:'',it.studio,it.episodes?it.episodes+'話':''].filter(Boolean).join(' ・ '))}</div>
+        <div class="meta">${esc([it.romaji!==titleOf(it)?it.romaji:'',it.studio,isMovie(it)?(it.start?'劇場版 '+startTxt(it)+'公開':'劇場版'):'',isMovie(it)?(it.duration?it.duration+'分':''):(it.episodes?it.episodes+'話':'')].filter(Boolean).join(' ・ '))}</div>
         <div style="margin:8px 0">${it.genres.map(g=>`<span class="pill">${esc(ja(g))}</span>`).join('')}${it.tags.map(t=>`<span class="pill">#${esc(ja(t))}</span>`).join('')}</div>
         ${prof.n>=3&&rc.match!=null?`<div class="reason">相性 ${rc.match}%${simsTxt(rc)}${rc.reasons.length?'　◎ '+esc(rc.reasons.map(ja).join('・')):''}${rc.cons.length?'　△ '+esc(rc.cons.map(ja).join('・')):''}</div>`:''}
         <p><a href="${esc(it.url)}" target="_blank" rel="noopener" style="color:var(--accent2)">AniListで開く ↗</a></p>
@@ -1002,7 +1140,7 @@ function openModal(id){
   // 日本語のあらすじ: TMDB一致済みで未取得なら、開いたときに1回だけ取得して保存
   const sc=db.streaming_cache[id];
   if((settings.tmdb_key||'').trim()&&sc&&sc.tmdb_id&&!sc.overview_ja&&!sc.ov_checked){
-    tmdb('/tv/'+sc.tmdb_id,{language:'ja-JP'}).then(d=>{
+    tmdb('/'+(sc.tmdb_kind||'tv')+'/'+sc.tmdb_id,{language:'ja-JP'}).then(d=>{
       const ov=(d.overview||'').trim();sc.ov_checked=true;if(ov)sc.overview_ja=ov;save();
       const box=$('#descBox');if(box&&ov&&$('#ov')){box.hidden=false;box.textContent=ov}
     }).catch(()=>{});
