@@ -230,7 +230,8 @@ async function searchAnime(text,onlyMovie){
 /* ---- 映画（AniList format=MOVIE。公開日は AniList の startDate＝主に日本での初公開日） ---- */
 const isMovie=it=>!!it&&it.format==='MOVIE';
 const ymd=d=>d.getFullYear()*10000+(d.getMonth()+1)*100+d.getDate();
-const startNum=it=>it.start?it.start.y*10000+(it.start.m||0)*100+(it.start.d||0):0;
+// 月・日が未定の作品はその年（月）の最後に並べる
+const startNum=it=>it.start?it.start.y*10000+(it.start.m||13)*100+(it.start.d||99):0;
 function startTxt(it){const s=it.start;if(!s)return'';return s.y+'年'+(s.m?s.m+'月':'')+(s.m&&s.d?s.d+'日':'')}
 // key: 'NOW'（最近公開＋公開予定）または西暦
 async function fetchMovies(key,force){
